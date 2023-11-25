@@ -1,0 +1,125 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <PubSubClient.h>
+
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+const char* BROKER_MQTT = "broker.hivemq.com";
+const int BROKER_PORT = 1883;
+const char* ID_MQTT = "esp32_mqtt_saudeconectada";
+const char* TOPIC_DHT = "saudeconectada/iot/dht";   
+const char* TOPIC_ULTRASONIC = "saudeconectada/iot/ultrasonic";
+
+int Pino_T = 12; 
+int Pino_E = 13; 
+long duration;
+float Distancia_Cm;
+
+const int Led_Vermelho = 21; 
+const int Led_Amarelo = 19; 
+const int Led_Verde = 18; 
+
+#define DHTPIN 14 
+#define DHTTYPE DHT22 
+DHT dht(DHTPIN, DHTTYPE);
+
+WiFiClient espClient;
+PubSubClient MQTT(espClient);
+
+const float Vel_som = 0.034;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(Led_Vermelho, OUTPUT); 
+  pinMode(Led_Verde, OUTPUT);  
+  pinMode(Led_Amarelo, OUTPUT);  
+  pinMode(Pino_T, OUTPUT); 
+  pinMode(Pino_E, INPUT); 
+
+  // Conectar ao Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Conectando ao WiFi...");
+  }
+  Serial.println("Conectado ao WiFi");
+
+  dht.begin();
+  MQTT.setServer(BROKER_MQTT, BROKER_PORT);
+}
+
+void checkWiFIAndMQTT() {
+  while (!MQTT.connected()) {
+    Serial.print("Conectando ao servidor MQTT...");
+    if (MQTT.connect(ID_MQTT)) {
+      Serial.println("Conectado ao servidor MQTT");
+    } else {
+      Serial.print("Falha na conexão ao servidor MQTT, rc=");
+      Serial.print(MQTT.state());
+      Serial.println(" Tentando reconectar em 5 segundos...");
+      delay(5000);
+    }
+  }
+}
+
+void updateSensorValues() {
+  // Leitura do sensor DHT22
+  float temperatura = dht.readTemperature();
+  float umidade = dht.readHumidity();
+
+  // Leitura do sensor ultrassônico
+  digitalWrite(Pino_T, LOW);
+  delayMicroseconds(2);
+  digitalWrite(Pino_T, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(Pino_T, LOW);
+
+  duration = pulseIn(Pino_E, HIGH);
+  Distancia_Cm = duration * Vel_som / 2;
+
+  String ultrasonicData;
+  String corLed = "green"; 
+
+  if (Distancia_Cm < 198.995) {
+    ultrasonicData = "{\"distance\":" + String(Distancia_Cm) + ",\"message\":\"Estoque Crítico\"}";
+    corLed = "red"; 
+  } else {
+    ultrasonicData = "{\"distance\":" + String(Distancia_Cm) + ",\"message\":\"Estoque Normal\"}";
+  }
+
+  if (corLed == "red") {
+    digitalWrite(Led_Vermelho, HIGH); 
+    digitalWrite(Led_Verde, LOW); 
+  } else {
+    digitalWrite(Led_Vermelho, LOW); 
+    digitalWrite(Led_Verde, HIGH); 
+  }
+
+  if (temperatura < 15 || temperatura > 25) {
+    digitalWrite(Led_Amarelo, HIGH);
+    corLed = "yellow";
+  } else {
+    digitalWrite(Led_Amarelo, LOW);
+  }
+
+  MQTT.publish(TOPIC_ULTRASONIC, ultrasonicData.c_str());
+  Serial.println("Dados do sensor ultrassônico enviados: " + ultrasonicData);
+
+  if (!isnan(umidade) && !isnan(temperatura)) {
+    String dhtData = "{\"temperature\":" + String(temperatura) + ",\"humidity\":" + String(umidade) + "}";
+    MQTT.publish(TOPIC_DHT, dhtData.c_str());
+    Serial.println("Dados do DHT22 enviados: " + dhtData);
+  } else {
+    Serial.println("Falha ao ler o sensor DHT22");
+  }
+}
+
+void loop() {
+  checkWiFIAndMQTT();
+  MQTT.loop();
+  updateSensorValues();
+  delay(2000);
+}
